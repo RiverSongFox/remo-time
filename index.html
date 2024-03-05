@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>Time Report Tool</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+</head>
+
+<body>
+  <header>
+    <h1>Remotasks / Outlier Time Report</h1>
+  </header>
+
+  <main>
+    <section>
+      <h2>Instructions</h2>
+      <ul>
+        <li>Make sure you have Developer Tools open: use <kbd>F12</kbd> or <kbd>Cmd+Shift+I</kbd></li>
+        <li>Navigate to <a href="https://www.remotasks.com/tasklog" target="_blank" rel="noopen noreferrer">Remotasks
+            Task Log</a> or <a href="https://app.outlier.ai/en/expert/tasklog" target="_blank"
+            rel="noopen noreferrer">Outlier Completed Work</a></li>
+        <li>Click the <samp>Show more</samp> button until you have all the necessary data displayed on the page</li>
+        <li>Open the Network tab in Developer Tools</li>
+        <li>Right-click on any request, and select <samp>Save all as HAR with content</samp></li>
+        <li>Upload the HAR file below</li>
+      </ul>
+      <form id="fileUpload">
+        <input type="file" accept=".har" required>
+        <input type="submit" value="Process">
+      </form>
+    </section>
+
+    <section>
+      <h2>Results</h2>
+      <table id="resultsTable">
+        <thead>
+          <tr>
+            <th>Week Of</th>
+            <th>Tasks</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    document.getElementById("fileUpload")
+      .addEventListener("submit", async function (event) {
+        event.preventDefault()
+
+        const data = await loadHARFile(event)
+        const attempts = getAttempts(data)
+        const totals = calculateTotals(attempts)
+
+        updateResultsTable(totals)
+      })
+
+    function updateResultsTable(totals) {
+      const table = document.getElementById("resultsTable")
+      const tbody = table.querySelector("tbody")
+
+      tbody.innerHTML = ""
+
+      totals.forEach(total => {
+        const row = tbody.insertRow()
+
+        row.insertCell().textContent = total.weekOf
+        row.insertCell().textContent = total.count
+        row.insertCell().textContent = total.duration
+      })
+    }
+
+    async function loadHARFile(event) {
+      return new Promise((resolve, reject) => {
+        const fileInput = event.target.querySelector("input[type=file]");
+        const file = fileInput.files[0];
+
+        if (!file) {
+          reject("No file selected.")
+        }
+
+        const reader = new FileReader();
+
+        reader.onload = function (e) {
+          const contents = e.target.result;
+
+          try {
+            const harData = JSON.parse(contents);
+
+            if (!harData.log || !harData.log.entries) {
+              throw new Error("Invalid HAR file structure.");
+            }
+
+            resolve(harData)
+          }
+          catch (error) {
+            reject(`Not a HAR file or invalid JSON; ${error.message}`)
+          }
+        };
+
+        reader.readAsText(file);
+      })
+    }
+
+    function getAttempts(harData) {
+      return harData.log.entries
+        .filter(entry => (
+          entry.request.method === "GET" &&
+          entry.request.url.includes("/internal/scaler/sessions")
+        ))
+        .flatMap(entry => JSON.parse(entry.response.content.text).taskLog)
+        .flatMap(taskLog => taskLog.attempts)
+        .map(attempt => {
+          const datePacific = new Date((new Date(attempt.submittedAt)).toLocaleString("en-US", {
+            timeZone: "America/Los_Angeles"
+          }))
+
+          return {
+            submissionId: attempt.submissionId,
+            duration: attempt.duration,
+            submittedAt: datePacific,
+            weekOf: getWeekOf(datePacific)
+          }
+        })
+    }
+
+    function getWeekOf(date) {
+      const weekStart = new Date(date)
+
+      // Set to midnight
+      weekStart.setHours(0)
+      weekStart.setMinutes(0)
+      weekStart.setSeconds(0)
+
+      // Set to the previous Monday
+      while (weekStart.getDay() !== 1) {
+        weekStart.setDate(weekStart.getDate() - 1)
+      }
+
+      return weekStart
+    }
+
+    function calculateTotals(attempts) {
+      const totals = attempts
+        .reduce((acc, val) => {
+          const weekOf = val.weekOf.getTime()
+
+          acc[weekOf] = acc[weekOf] ?? {
+            duration: 0,
+            count: 0
+          }
+
+          acc[weekOf].duration += val.duration
+          acc[weekOf].count += 1
+
+          return acc
+        }, {})
+
+      return Object.entries(totals)
+        .sort(([a], [b]) => b - a)
+        .map(([weekOf, { duration, count }]) => {
+          return {
+            weekOf: new Date(parseInt(weekOf)).toLocaleDateString(),
+            duration: formatDuration(duration),
+            count
+          }
+        })
+    }
+
+    function formatDuration(duration) {
+      const hours = Math.floor(duration / 3600);
+      const minutes = Math.floor((duration - hours * 3600) / 60);
+
+      return `${hours >= 15 ? "✅" : "⚠️"} ${hours}h ${minutes}m`;
+    }
+  </script>
+</body>
+
+</html>
